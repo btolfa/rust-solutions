@@ -1,6 +1,8 @@
 use clap::{Command, Arg};
 use std::error::Error;
-use std::num::ParseIntError;
+use std::fs::File;
+use std::io;
+use std::io::{BufRead, BufReader, Read};
 
 type MyResult<T> = Result<T, Box<dyn Error>>;
 
@@ -50,15 +52,49 @@ pub fn get_args() -> MyResult<Config> {
         files: matches.values_of_lossy("files").unwrap(),
         lines: parse_positive_int(&matches.value_of_lossy("lines").unwrap())
             .map_err(|err|format!("illegal line count -- {}", err))?,
-        bytes: match matches.value_of_lossy("bytes") {
-            Some(val) => Some(parse_positive_int(&val).map_err(|err|format!("illegal byte count -- {}", err))?),
-            _ => None,
-        },
+        bytes: matches.value_of_lossy("bytes")
+            .map(|x| parse_positive_int(&x))
+            .transpose()
+            .map_err(|err|format!("illegal byte count -- {}", err))?,
     })
 }
 
 pub fn run(config: Config) -> MyResult<()> {
-    println!("{:#?}", config);
+    for (idx, filename) in config.files.iter().enumerate() {
+        match open(&filename) {
+            Err(err) => eprintln!("{}: {}", filename, err),
+            Ok(mut reader) => {
+                if config.files.len() > 1 {
+                    println!("{}==> {} <==", if idx > 0 {"\n"} else {""}, &filename);
+                }
+                if let Some(bytes) = config.bytes {
+                    process_bytes(&mut reader, bytes)?;
+                } else {
+                    process_lines(&mut reader, config.lines)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn process_bytes(reader:&mut Box<dyn BufRead>, bytes: usize) -> MyResult<()> {
+    let mut handler = reader.take(bytes as u64);
+    let mut buffer = vec![0u8; bytes];
+    let bytes = handler.read(&mut buffer)?;
+
+    print!("{}", String::from_utf8_lossy(&buffer[..bytes]));
+    Ok(())
+}
+
+fn process_lines(reader:&mut Box<dyn BufRead>, lines: usize) -> MyResult<()> {
+    let mut line = String::new();
+    for _ in 0..lines {
+        match reader.read_line(&mut line)? {
+            0 => return Ok(()),
+            _ => print!("{}", line),
+        };
+    }
     Ok(())
 }
 
@@ -66,6 +102,13 @@ fn parse_positive_int(value: &str) -> MyResult<usize> {
     match value.parse() {
         Ok(n) if n > 0 => Ok(n),
         _ => Err(From::from(value)),
+    }
+}
+
+fn open(filename: &str) -> MyResult<Box<dyn BufRead>> {
+    match filename {
+        "-" => Ok(Box::new(BufReader::new(io::stdin()))),
+        _ => Ok(Box::new(BufReader::new(File::open(filename)?))),
     }
 }
 
